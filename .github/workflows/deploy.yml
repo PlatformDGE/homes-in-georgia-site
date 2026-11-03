@@ -32,11 +32,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/checkout@v4
-        with:
-          repository: PlatformDGE/-rentintbilisi-crm
-          path: source
-          sparse-checkout: site
+      # Only the tree hash is needed here, so skip file contents: the source
+      # repository is large and this job runs every 10 minutes.
+      - name: Read the site/ tree hash
+        run: git clone --quiet --depth 1 --filter=blob:none --no-checkout https://github.com/PlatformDGE/-rentintbilisi-crm.git source
 
       - id: check
         env:
@@ -70,6 +69,7 @@ jobs:
           repository: PlatformDGE/-rentintbilisi-crm
           ref: ${{ needs.check.outputs.sha }}
           path: source
+          filter: blob:none
           sparse-checkout: site
 
       - name: Prepare public files
