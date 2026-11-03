@@ -1,0 +1,106 @@
+# Made with Claude (Anthropic) · © Homes in Georgia · Created by Irakli Kvirkvelia
+#
+# Publishes site/ from PlatformDGE/-rentintbilisi-crm to https://hge.ge.
+# The source repository is public, so no token is needed. Every 10 minutes the
+# check job compares the git tree hash of site/ with the last deployed one, and
+# the deploy job runs only when it changed. Committing that hash also keeps the
+# schedule alive (GitHub pauses scheduled workflows in inactive repositories).
+name: Deploy hge.ge
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  push:
+    branches: [main]
+    paths: [".github/workflows/deploy.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+      sha: ${{ steps.check.outputs.sha }}
+      tree: ${{ steps.check.outputs.tree }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: PlatformDGE/-rentintbilisi-crm
+          path: source
+          sparse-checkout: site
+
+      - id: check
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          TREE="$(git -C source rev-parse HEAD:site)"
+          echo "tree=$TREE" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git -C source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT" = "schedule" ] && [ "$(cat .last-site-tree 2>/dev/null)" = "$TREE" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: PlatformDGE/-rentintbilisi-crm
+          ref: ${{ needs.check.outputs.sha }}
+          path: source
+          sparse-checkout: site
+
+      - name: Prepare public files
+        env:
+          SHA: ${{ needs.check.outputs.sha }}
+        run: |
+          cp -R source/site public
+          # Same asset versioning as the source repository's deploy.
+          V="${SHA::8}"
+          find public/assets/js -name '*.js' -exec sed -i -E "s#(from '\.{1,2}/[^']+\.js)'#\1?v=$V'#g" {} +
+          sed -i -E "s#(assets/(css|js)/[a-z-]+\.(css|js))\"#\1?v=$V\"#g" public/index.html
+          # Share pages are generated with the old address; point them at hge.ge.
+          grep -rlF 'platformdge.github.io/-rentintbilisi-crm/site/' public --include='*.html' --include='*.json' --include='*.js' \
+            | xargs -r sed -i 's#https://platformdge\.github\.io/-rentintbilisi-crm/site/#https://hge.ge/#g'
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Remember the deployed version
+        env:
+          TREE: ${{ needs.check.outputs.tree }}
+        run: |
+          echo "$TREE" > .last-site-tree
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .last-site-tree
+          git commit -m "Deployed site tree $TREE" || exit 0
+          git push
