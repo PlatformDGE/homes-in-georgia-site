@@ -24,7 +24,7 @@ def shrink(job):
         with Image.open(src) as im:
             im = ImageOps.exif_transpose(im).convert('RGB')
             im.thumbnail((MAX_SIDE, MAX_SIDE), Image.LANCZOS)
-            tmp = dst + '.tmp'
+            tmp = f'{dst}.{os.getpid()}.tmp'  # two listings can share one photo
             im.save(tmp, 'JPEG', quality=QUALITY, optimize=True, progressive=True)
         if os.path.getsize(tmp) >= os.path.getsize(src):
             shutil.copyfile(src, tmp)  # already small: keep the original bytes
