@@ -50,7 +50,12 @@ jobs:
           TREE="$(git -C source rev-parse HEAD:site)"
           echo "tree=$TREE" >> "$GITHUB_OUTPUT"
           echo "sha=$(git -C source rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          if [ "$FORCE" != "true" ] && [ "$(cat .last-site-tree 2>/dev/null)" = "$TREE" ]; then
+          # A run that waited in the queue while main moved on (a newer deploy
+          # or a restart commit) leaves the work to the next run, which starts
+          # from the current commit.
+          if [ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$GITHUB_SHA" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          elif [ "$FORCE" != "true" ] && [ "$(cat .last-site-tree 2>/dev/null)" = "$TREE" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -78,6 +83,13 @@ jobs:
           filter: blob:none
           sparse-checkout: site
 
+      # Shrunk photos from earlier runs, keyed by each photo's git blob id.
+      - uses: actions/cache/restore@v4
+        with:
+          path: .photo-cache
+          key: photos-v1-${{ github.run_id }}
+          restore-keys: photos-v1-
+
       - name: Prepare public files
         env:
           SHA: ${{ needs.check.outputs.sha }}
@@ -91,6 +103,18 @@ jobs:
           grep -rlF 'platformdge.github.io/-rentintbilisi-crm/site/' public --include='*.html' --include='*.json' --include='*.js' \
             | xargs -r sed -i 's#https://platformdge\.github\.io/-rentintbilisi-crm/site/#https://hge.ge/#g'
 
+      # Lighter photos: fitted into 1600 px at quality 80. Originals stay in the source repository.
+      - name: Shrink photos
+        run: |
+          pip install --quiet pillow
+          git -C source ls-tree -r HEAD site/media > photo-tree.txt
+          python3 scripts/shrink_photos.py public .photo-cache photo-tree.txt
+
+      - uses: actions/cache/save@v4
+        with:
+          path: .photo-cache
+          key: photos-v1-${{ github.run_id }}
+
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
@@ -99,6 +123,8 @@ jobs:
 
       - id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          timeout: 1800000 # 30 minutes; the site is large
 
       - name: Remember the deployed version
         env:
@@ -111,3 +137,14 @@ jobs:
           git commit -m "Deployed site tree $TREE" || exit 0
           git pull --rebase origin main
           git push
+
+      # A deployment that failed or was cancelled stays tied to this commit, and
+      # later attempts from the same commit get stuck on it. A new empty commit
+      # lets the next scheduled run start a fresh deployment.
+      - name: Restart from a fresh commit
+        if: failure() || cancelled()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "Start a fresh Pages deployment"
+          for i in 1 2 3; do git pull --rebase origin main && git push && break; sleep 5; done
